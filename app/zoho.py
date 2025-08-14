@@ -1,13 +1,14 @@
-import httpx, time
+import httpx
 from datetime import datetime, timedelta
-from sqlmodel import Session, select
-from .models import ZohoConnection, AccountCache
-from .config import ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REDIRECT_URI, ZOHO_SCOPES
+from sqlmodel import Session
+from .models import ZohoConnection
+from .config import ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, ZOHO_REDIRECT_URI
 
 OAUTH_DOMAIN = "https://accounts.zoho.com"
 API_BASE = "https://books.zoho.com/api/v3"
 
 def auth_url(state: str) -> str:
+    from .config import ZOHO_SCOPES
     return (
         f"{OAUTH_DOMAIN}/oauth/v2/auth?response_type=code"
         f"&client_id={ZOHO_CLIENT_ID}"
@@ -43,9 +44,7 @@ async def refresh_access_token(conn: ZohoConnection, session: Session) -> ZohoCo
     resp.raise_for_status()
     data = resp.json()
     conn.access_token = data.get("access_token")
-    # Zoho returns expires_in seconds
     expires_in = int(data.get("expires_in", 3600))
-    from datetime import datetime, timedelta
     conn.expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
     session.add(conn)
     session.commit()
@@ -58,9 +57,7 @@ async def get_accounts(org_id: str, access_token: str) -> list:
         resp = await client.get(f"{API_BASE}/chartofaccounts", headers=headers, params={"organization_id": org_id})
     resp.raise_for_status()
     data = resp.json()
-    # Adjust based on actual API payload
-    accounts = data.get("chartofaccounts", [])
-    return accounts
+    return data.get("chartofaccounts", []) or data.get("chart_of_accounts", []) or []
 
 async def post_journal(org_id: str, access_token: str, payload: dict) -> dict:
     headers = {"Authorization": f"Zoho-oauthtoken {access_token}"}

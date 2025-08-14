@@ -1,7 +1,16 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from .routers import oauth_zoho, companies, accounts, rules, ocr, books
 
 app = FastAPI(title="Zoho Multi-company Journal Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # tighten in prod
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(oauth_zoho.router, prefix="/oauth/zoho", tags=["oauth"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])

@@ -1,10 +1,10 @@
 from typing import Optional
-from sqlmodel import SQLModel, Field, Column, JSON
+from sqlmodel import SQLModel, Field
 from datetime import datetime
 
 class ZohoConnection(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    org_id: str
+    org_id: str = ""
     org_name: Optional[str] = None
     zoho_user_id: Optional[str] = None
     access_token: Optional[str] = None
@@ -33,7 +33,6 @@ class BankOrgRule(SQLModel, table=True):
 
 class MappingRule(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    # simple pattern on description/payee
     pattern: str
     debit_account_id: str
     credit_account_id: str

@@ -9,3 +9,7 @@ ZOHO_REDIRECT_URI = os.getenv("ZOHO_REDIRECT_URI", "http://localhost:8000/oauth/
 ZOHO_SCOPES = os.getenv("ZOHO_SCOPES", "ZohoBooks.fullaccess.all")
 APP_SECRET = os.getenv("APP_SECRET", "devsecret")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+
+USE_GCVISION = os.getenv("USE_GCVISION", "0") == "1"
+S3_BUCKET = os.getenv("S3_BUCKET")
+S3_REGION = os.getenv("S3_REGION")

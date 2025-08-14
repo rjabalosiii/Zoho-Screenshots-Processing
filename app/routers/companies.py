@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
-from ..db import get_session, init_db
+from ..db import get_session
 from ..models import ZohoConnection
 from ..schemas import CompanyOut
 

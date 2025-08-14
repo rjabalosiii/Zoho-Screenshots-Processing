@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
+from sqlmodel import Session
 from ..db import get_session
 from ..models import BankOrgRule, MappingRule
 

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
-from sqlmodel import Session, select
+from sqlmodel import Session
 from ..db import get_session
-from ..models import ZohoConnection, AccountCache
+from ..models import ZohoConnection
 from ..zoho import refresh_access_token, get_accounts
 
 router = APIRouter()
@@ -12,9 +12,7 @@ async def list_accounts(connection_id: int, session: Session = Depends(get_sessi
     if not conn or not conn.org_id:
         return {"error": "invalid connection"}
     conn = await refresh_access_token(conn, session)
-    # simple cache bust each call in scaffold; in production add TTL check
     accounts = await get_accounts(conn.org_id, conn.access_token)
-    # Replace with correct fields from Zoho
     out = []
     for a in accounts:
         out.append({
