@@ -2,9 +2,10 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Tuple
-import re, io, os
+import os, io, re
+from datetime import datetime
 from PIL import Image
-from ..config import USE_GCVISION
+from ..config import USE_GCVISION  # assumes your config sets GOOGLE_APPLICATION_CREDENTIALS when GCP_SA_JSON exists
 
 router = APIRouter()
 
@@ -21,19 +22,14 @@ BANK_PATTERNS = [
     (r"\b(China\s*Bank|Chinabank)\b", "China Bank"),
 ]
 
+# money / accounts / dates
 AMOUNT_RX = re.compile(r"(?:PHP|₱|Php|php)?\s*([0-9]{1,3}(?:[, ]?[0-9]{3})*(?:\.[0-9]{2})?)")
 LAST4_RX  = re.compile(r"(?:Acct(?:ount)?(?:\s*No\.?)?|ending\s+in|xxxx|\*{2,}|Acct\s*#?)\D*([0-9]{4})", re.I)
+DATE_RX   = re.compile(
+    r"\b(\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{4}|[A-Z][a-z]{2,9}\s+\d{1,2},\s*\d{4})\b"
+)
 
-def normalize_amount(text: str) -> Optional[float]:
-    nums = []
-    # remove thousands separators to make float() simple
-    clean = text.replace(",", "").replace(" ", "")
-    for m in AMOUNT_RX.finditer(clean):
-        try:
-            nums.append(float(m.group(1)))
-        except Exception:
-            pass
-    return max(nums) if nums else None
+AMOUNT_KEYS = ("amount", "amt", "amnt", "total", "php", "transfer amount", "payment", "paid")
 
 def detect_bank(text: str) -> Optional[str]:
     for rx, label in BANK_PATTERNS:
@@ -44,6 +40,62 @@ def detect_bank(text: str) -> Optional[str]:
 def detect_last4(text: str) -> Optional[str]:
     m = LAST4_RX.search(text)
     return m.group(1) if m else None
+
+def extract_reference(text: str) -> Optional[str]:
+    # Normalize a bit
+    t = re.sub(r"[^\w\s:/#-]", " ", text)
+    low = t.lower()
+
+    # Common “reference” cues
+    for key in ("reference", "ref no", "ref#", "ref no.", "transaction reference", "txn id", "transaction no", "pid"):
+        m = re.search(rf"{re.escape(key)}\s*(?:number|no\.?|#|:)?\s*([A-Z0-9\-_/]{{5,}})", low, re.I)
+        if m:
+            return m.group(1).upper()
+
+    # Generic token patterns like FT-XXXX, PID-XXXX, etc.
+    m = re.search(r"\b([A-Z]{2,5}-[A-Z0-9]{5,})\b", text)
+    return m.group(1) if m else None
+
+def extract_date(text: str) -> Optional[str]:
+    m = DATE_RX.search(text)
+    if not m:
+        return None
+    s = m.group(1)
+    # Try to normalize to YYYY-MM-DD
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except Exception:
+            pass
+    return s  # fallback
+
+def extract_amount(text: str) -> Optional[float]:
+    """
+    Prefer numbers near amount-like keywords; fallback to largest money-looking number.
+    """
+    cleaned = text.replace(",", "")
+    lower = cleaned.lower()
+    best = None
+
+    # 1) keyword proximity
+    for key in AMOUNT_KEYS:
+        for m in re.finditer(rf"{re.escape(key)}\s*[:=]?\s*(?:php|₱)?\s*([0-9]+(?:\.[0-9]{{2}})?)", lower, re.I):
+            try:
+                val = float(m.group(1))
+                best = val if best is None or val > best else best
+            except Exception:
+                pass
+    if best is not None:
+        return best
+
+    # 2) generic amounts
+    for m in AMOUNT_RX.finditer(cleaned):
+        try:
+            val = float(m.group(1))
+            best = val if best is None or val > best else best
+        except Exception:
+            pass
+    return best
 
 # --------------------------- OCR engines ----------------------------------
 
@@ -60,8 +112,7 @@ def _ocr_google_vision(image_bytes: bytes) -> Tuple[str, float, str]:
     client = vision.ImageAnnotatorClient()
     image = vision.Image(content=image_bytes)
     ctx   = vision.ImageContext(language_hints=["en", "fil", "tl"])
-
-    # document_text_detection is better for screenshots with layout
+    # Better for screenshots with layout
     resp = client.document_text_detection(image=image, image_context=ctx)
 
     if resp.error.message:
@@ -81,7 +132,6 @@ def _ocr_google_vision(image_bytes: bytes) -> Tuple[str, float, str]:
     return full_text, float(conf), "en,fil,tl"
 
 def _ocr_naive(_: bytes) -> Tuple[str, float, str]:
-    # fallback when Vision is disabled
     return "", 0.10, "none"
 
 def do_ocr(image_bytes: bytes) -> Tuple[str, float, str]:
@@ -95,24 +145,30 @@ class RouteBody(BaseModel):
 
 @router.post("/upload")
 async def upload(file: UploadFile = File(...)):
+    """
+    Upload an image; returns OCR text and best-guess structured fields.
+    """
     try:
         content = await file.read()
 
-        # Light pre-processing: upscale small screenshots to help OCR a bit
+        # Light pre-processing: upscale very small screenshots to help OCR
         if len(content) < 150_000:
             img = Image.open(io.BytesIO(content)).convert("RGB")
             w, h = img.size
             if max(w, h) < 1200:
                 scale = max(1.5, 1200 / max(w, h))
-                img = img.resize((int(w*scale), int(h*scale)))
+                img = img.resize((int(w * scale), int(h * scale)))
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=90)
                 content = buf.getvalue()
 
         text, confidence, _ = do_ocr(content)
+
         bank   = detect_bank(text or "")
         last4  = detect_last4(text or "")
-        amount = normalize_amount(text or "")
+        amount = extract_amount(text or "")
+        refno  = extract_reference(text or "")
+        date_  = extract_date(text or "")
 
         return {
             "text": text,
@@ -120,15 +176,18 @@ async def upload(file: UploadFile = File(...)):
             "bank_name": bank,
             "account_last4": last4,
             "amount_guess": amount,
+            "reference_guess": refno,
+            "date_guess": date_,
             "filename": file.filename,
             "bytes": len(content),
         }
     except HTTPException:
         raise
     except Exception as e:
+        # surface exact reason instead of generic 500
         raise HTTPException(500, f"OCR pipeline error: {e}")
 
-# Diagnostics (remove in prod if you like)
+# Diagnostics (safe to keep during setup; remove later if desired)
 @router.get("/_diag")
 def ocr_diag():
     gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
@@ -140,5 +199,8 @@ def ocr_diag():
 
 @router.post("/route")
 async def route(_: RouteBody):
-    # for now, always force a company pick until you add bank->company rules
+    """
+    Placeholder routing: always ask user to pick a company until
+    /rules/bank is implemented to remember bank->connection_id.
+    """
     return {"needs_choice": True, "connection_id": None, "confidence": 0.5}
